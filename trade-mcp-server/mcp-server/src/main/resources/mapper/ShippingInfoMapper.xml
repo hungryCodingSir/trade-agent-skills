@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.cbec.mcp.server.mapper.ShippingInfoMapper">
+
+    <resultMap id="ShippingDetailVOMap" type="com.cbec.mcp.server.dto.ShippingDetailVO">
+        <result column="shipping_id"          property="shippingId"/>
+        <result column="order_no"             property="orderNo"/>
+        <result column="tracking_no"          property="trackingNo"/>
+        <result column="carrier"              property="carrier"/>
+        <result column="shipping_method"      property="shippingMethod"/>
+        <result column="origin_port"          property="originPort"/>
+        <result column="destination_port"     property="destinationPort"/>
+        <result column="estimated_departure"  property="estimatedDeparture"/>
+        <result column="actual_departure"     property="actualDeparture"/>
+        <result column="estimated_arrival"    property="estimatedArrival"/>
+        <result column="actual_arrival"       property="actualArrival"/>
+        <result column="customs_status"       property="customsStatus"/>
+        <result column="shipping_status"      property="shippingStatus"/>
+        <result column="package_info"         property="packageInfo"/>
+        <collection property="tracks" ofType="com.cbec.mcp.server.dto.ShippingDetailVO$TrackRecord"
+                    column="shipping_id" select="selectTrackRecords"/>
+    </resultMap>
+
+    <resultMap id="TrackRecordMap" type="com.cbec.mcp.server.dto.ShippingDetailVO$TrackRecord">
+        <result column="track_time"   property="trackTime"/>
+        <result column="location"     property="location"/>
+        <result column="status"       property="status"/>
+        <result column="description"  property="description"/>
+    </resultMap>
+
+    <select id="selectShippingDetail" resultMap="ShippingDetailVOMap">
+        SELECT
+            si.id               AS shipping_id,
+            o.order_no,
+            si.tracking_no,
+            si.carrier,
+            si.shipping_method,
+            si.origin_port,
+            si.destination_port,
+            si.estimated_departure,
+            si.actual_departure,
+            si.estimated_arrival,
+            si.actual_arrival,
+            si.customs_status,
+            si.shipping_status,
+            si.package_info
+        FROM shipping_info si
+        INNER JOIN order_info o ON si.order_id = o.id
+        WHERE o.order_no = #{orderNo}
+    </select>
+
+    <select id="selectTrackRecords" resultMap="TrackRecordMap">
+        SELECT
+            st.track_time,
+            st.location,
+            st.status,
+            st.description
+        FROM shipping_track st
+        WHERE st.shipping_id = #{shipping_id}
+        ORDER BY st.track_time DESC
+    </select>
+
+</mapper>

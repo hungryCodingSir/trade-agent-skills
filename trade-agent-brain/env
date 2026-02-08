@@ -1,0 +1,47 @@
+# LLM (阿里云百炼 / OpenAI Compatible)
+DASHSCOPE_API_KEY=sk-your-api-key-here
+DASHSCOPE_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+
+# Application
+APP_NAME=Trade Agent Brain
+APP_VERSION=2.0.0
+DEBUG=true
+
+# Main Model
+LLM_MODEL=qwen-plus
+LLM_TEMPERATURE=0.3
+LLM_MAX_TOKENS=4096
+
+# Mini Model (Summary / Planning)
+MINI_LLM_MODEL=qwen-turbo
+MINI_LLM_TEMPERATURE=0.1
+
+# Embedding
+EMBEDDING_MODEL=text-embedding-v4
+
+# Agent
+AGENT_MAX_TOKENS_BEFORE_SUMMARY=4000
+AGENT_MESSAGES_TO_TRIGGER=10
+AGENT_MESSAGES_TO_KEEP=4
+SKILLS_DIR=./skills/
+
+# MySQL
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=your_password
+MYSQL_DATABASE=trade_agent
+MYSQL_POOL_SIZE=10
+
+# Redis
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6379
+REDIS_DB=0
+
+# Milvus
+MILVUS_HOST=127.0.0.1
+MILVUS_PORT=19530
+
+# MCP Server
+MCP_SERVER_URL=http://127.0.0.1:9001/sse
+MCP_CALL_TIMEOUT=30

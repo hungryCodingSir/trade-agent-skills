@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.cbec.mcp.server.mapper.OrderInfoMapper">
+
+    <resultMap id="OrderDetailVOMap" type="com.cbec.mcp.server.dto.OrderDetailVO">
+        <result column="order_id"        property="orderId"/>
+        <result column="order_no"        property="orderNo"/>
+        <result column="buyer_name"      property="buyerName"/>
+        <result column="seller_name"     property="sellerName"/>
+        <result column="total_amount"    property="totalAmount"/>
+        <result column="shipping_fee"    property="shippingFee"/>
+        <result column="tax_amount"      property="taxAmount"/>
+        <result column="currency"        property="currency"/>
+        <result column="order_status"    property="orderStatus"/>
+        <result column="payment_status"  property="paymentStatus"/>
+        <result column="payment_method"  property="paymentMethod"/>
+        <result column="paid_at"         property="paidAt"/>
+        <result column="shipping_method" property="shippingMethod"/>
+        <result column="shipping_address" property="shippingAddress"/>
+        <result column="buyer_remark"    property="buyerRemark"/>
+        <result column="created_at"      property="createdAt"/>
+        <collection property="items" ofType="com.cbec.mcp.server.dto.OrderDetailVO$OrderItemVO"
+                    column="order_id" select="selectOrderItems"/>
+    </resultMap>
+
+    <resultMap id="OrderItemVOMap" type="com.cbec.mcp.server.dto.OrderDetailVO$OrderItemVO">
+        <result column="product_id"   property="productId"/>
+        <result column="product_name" property="productName"/>
+        <result column="product_sku"  property="productSku"/>
+        <result column="unit_price"   property="unitPrice"/>
+        <result column="quantity"     property="quantity"/>
+        <result column="subtotal"     property="subtotal"/>
+    </resultMap>
+
+    <select id="selectOrderDetail" resultMap="OrderDetailVOMap">
+        SELECT
+            o.id            AS order_id,
+            o.order_no,
+            b.username      AS buyer_name,
+            s.username      AS seller_name,
+            o.total_amount,
+            o.shipping_fee,
+            o.tax_amount,
+            o.currency,
+            o.order_status,
+            o.payment_status,
+            o.payment_method,
+            o.paid_at,
+            o.shipping_method,
+            o.shipping_address,
+            o.buyer_remark,
+            o.created_at
+        FROM order_info o
+        LEFT JOIN sys_user b ON o.buyer_id  = b.id
+        LEFT JOIN sys_user s ON o.seller_id = s.id
+        WHERE o.order_no = #{orderNo}
+    </select>
+
+    <select id="selectOrderItems" resultMap="OrderItemVOMap">
+        SELECT
+            oi.product_id,
+            oi.product_name,
+            oi.product_sku,
+            oi.unit_price,
+            oi.quantity,
+            oi.subtotal
+        FROM order_item oi
+        WHERE oi.order_id = #{order_id}
+        ORDER BY oi.id
+    </select>
+
+</mapper>
