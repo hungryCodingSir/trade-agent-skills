@@ -1,14 +1,14 @@
 """子智能体定义 — 每个 SubAgent 负责一个专业领域，由主 Agent 通过 task() 调度"""
 from typing import List, Dict, Any
+from deepagents import SubAgent
 
 
-def get_subagent_configs() -> List[Dict[str, Any]]:
+def get_subagent_configs() -> List[SubAgent]:
     """返回所有子智能体配置。每个 SubAgent 拥有独立上下文窗口和最小化的工具集。"""
 
     from app.tools import (
         query_order_status,
         query_shipping_info,
-        query_shopping_cart,
         send_email_notification,
     )
 
