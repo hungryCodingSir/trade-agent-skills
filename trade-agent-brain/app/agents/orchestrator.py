@@ -184,9 +184,19 @@ class CrossBorderAgent:
         """与 Agent 对话，返回包含 message / session_id / 可能的 interrupt 信息。"""
         thread_id = thread_id or self.session_id
 
+        # 任务复杂度预判，辅助 LLM 路由
+        complexity = self._estimate_complexity(message)
+        hint = (
+            f"\n[系统提示: 任务复杂度预判={complexity}，"
+            f"{'建议委派给专业 SubAgent' if complexity == 'complex' else '建议直接处理'}]"
+        )
+
         input_data = {
             "messages": [
-                HumanMessage(content=message, id=f"human-{generate_id()}")
+                HumanMessage(
+                    content=message + hint,
+                    id=f"human-{generate_id()}"
+                )
             ],
             "files": self._skill_files,
         }
@@ -264,6 +274,16 @@ class CrossBorderAgent:
             logger.error(f"Agent resume error: {e}", exc_info=True)
             raise
 
+
+    def _estimate_complexity(self, message: str) -> str:
+        """轻量级复杂度预判，辅助 LLM 路由"""
+        complex_signals = [
+            "对比", "分析", "报告", "统计", "趋势", "批量",
+            "所有订单", "最近几个", "汇总", "compare", "analyze",
+            "report", "多个", "历史记录",
+        ]
+        count = sum(1 for s in complex_signals if s in message)
+        return "complex" if count >= 2 else "simple"
 
 # Agent 实例缓存: (user_id, session_id) → CrossBorderAgent
 _agent_cache: Dict[tuple, CrossBorderAgent] = {}
