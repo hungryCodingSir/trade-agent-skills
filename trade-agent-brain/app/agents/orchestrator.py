@@ -62,8 +62,13 @@ def _load_skill_files(skills_dir: str) -> Dict[str, FileData]:
     skill_files: Dict[str, FileData] = {}
     skills_path = Path(skills_dir)
 
+    # 如果是相对路径，基于项目根目录解析
+    if not skills_path.is_absolute():
+        from app.config.settings import BASE_DIR
+        skills_path = BASE_DIR / skills_dir
+
     if not skills_path.exists():
-        logger.warning(f"Skills 目录不存在: {skills_dir}")
+        logger.warning(f"Skills 目录不存在: {skills_path}")
         return skill_files
 
     for skill_dir in skills_path.iterdir():

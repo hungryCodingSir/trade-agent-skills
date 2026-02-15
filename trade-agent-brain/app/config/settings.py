@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     agent_messages_to_keep: int = Field(default=4)
     skills_dir: str = Field(default="./skills/")
 
+    @property
+    def skills_dir_absolute(self) -> Path:
+        """返回 skills 目录的绝对路径"""
+        skills_path = Path(self.skills_dir)
+        if skills_path.is_absolute():
+            return skills_path
+        return BASE_DIR / self.skills_dir
+
     # MySQL
     mysql_host: str = Field(default="127.0.0.1")
     mysql_port: int = Field(default=3306)

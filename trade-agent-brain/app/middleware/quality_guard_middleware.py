@@ -7,7 +7,7 @@
 评估维度: 空响应 / 套话检测 / 隐私泄露 / 语言一致性 / 响应长度
 """
 import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Awaitable
 
 from langchain.agents.middleware import AgentMiddleware, AgentState, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage
@@ -62,6 +62,51 @@ class ResponseQualityGuardMiddleware(AgentMiddleware):
             ai_content = self._extract_content(response)
             if ai_content is None:
                 # 工具调用等非文本响应，直接放行
+                return response
+
+            score, issues = self._evaluate_response(ai_content)
+
+            logger.info(
+                f"[QualityGuard] attempt={attempt + 1}/{1 + self.max_retries}, "
+                f"score={score:.2f}, issues={issues or 'none'}"
+            )
+
+            if score > best_score:
+                best_score = score
+                best_response = response
+
+            if score >= self.min_score:
+                if attempt > 0:
+                    logger.info(f"[QualityGuard] 第 {attempt + 1} 次尝试通过")
+                return response
+
+            if "privacy_leak" in issues:
+                logger.warning("[QualityGuard] 检测到隐私泄露，强制重试")
+                continue
+
+            logger.info(f"[QualityGuard] 质量不达标 ({score:.2f} < {self.min_score})，重试")
+
+        logger.warning(f"[QualityGuard] 重试用尽，返回最佳响应 (score={best_score:.2f})")
+        return best_response
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """异步版本：拦截模型调用，评估质量，不合格则重试。"""
+        best_response = None
+        best_score = 0.0
+
+        for attempt in range(1 + self.max_retries):
+            if attempt == 0:
+                response = await handler(request)
+            else:
+                enhanced_request = self._enhance_request(request, best_response, best_score, attempt)
+                response = await handler(enhanced_request)
+
+            ai_content = self._extract_content(response)
+            if ai_content is None:
                 return response
 
             score, issues = self._evaluate_response(ai_content)

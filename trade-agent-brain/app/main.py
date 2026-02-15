@@ -24,10 +24,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     if not await check_redis_connection():
         logger.error("Redis 连接失败!")
 
-    global checkpointer
-    saver = AsyncRedisSaver.from_conn_string(settings.redis_url)
-    await saver.__aenter__()
-    checkpointer = saver
+    global checkpointer, _saver_cm
+    _saver_cm = AsyncRedisSaver.from_conn_string(settings.redis_url)
+    checkpointer = await _saver_cm.__aenter__()
     logger.info("Redis Checkpointer started")
 
     try:
@@ -50,7 +49,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # 关闭阶段
     logger.info("Shutting down...")
     try:
-        await saver.__aexit__(None, None, None)
+        await _saver_cm.__aexit__(None, None, None)
         logger.info("Redis Checkpointer closed")
     except Exception as e:
         logger.warning(f"Checkpointer 关闭异常: {e}")
