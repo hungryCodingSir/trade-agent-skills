@@ -9,6 +9,34 @@ CREATE DATABASE IF NOT EXISTS `cross_border_agent`
 
 USE `cross_border_agent`;
 
+-- cross_border_agent.chat_messages definition
+
+CREATE TABLE `chat_messages` (
+  `id` bigint NOT NULL COMMENT '主键ID',
+  `msg_id` varchar(64) NOT NULL COMMENT '消息ID',
+  `user_id` int NOT NULL COMMENT '用户ID',
+  `session_id` varchar(64) NOT NULL COMMENT '所属会话ID',
+  `role` varchar(20) NOT NULL COMMENT '角色 (human/ai)',
+  `content` text NOT NULL COMMENT '消息内容',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='对话消息表';
+
+-- cross_border_agent.chat_messages_summaries definition
+
+CREATE TABLE `chat_messages_summaries` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `summary_id` varchar(64) NOT NULL COMMENT '摘要ID',
+  `user_id` int NOT NULL COMMENT '用户ID',
+  `session_id` varchar(64) NOT NULL COMMENT '所属会话ID',
+  `mes_id_start` varchar(64) NOT NULL COMMENT '原始消息的起始ID',
+  `mes_id_end` varchar(64) NOT NULL COMMENT '原始消息的结束ID',
+  `content` text NOT NULL COMMENT '摘要消息内容',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=7425448665549901826 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='聊天摘要表';
 -- -----------------------------------------------------------
 -- 用户基础信息表
 -- -----------------------------------------------------------
