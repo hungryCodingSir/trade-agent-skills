@@ -1,25 +1,34 @@
 """Trade Agent Brain — FastAPI 入口"""
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from langgraph.checkpoint.redis import AsyncRedisSaver
 from loguru import logger
 
 from app.config.database import check_mysql_connection, engine
 from app.config.redis_config import check_redis_connection, RedisManager
 from app.config.settings import settings
 
+checkpointer: Optional[AsyncRedisSaver] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator:
     logger.info("Starting Trade Agent Brain...")
 
+    # ── 启动阶段：所有初始化在 yield 之前 ──
     if not await check_mysql_connection():
         logger.error("MySQL 连接失败!")
 
     if not await check_redis_connection():
         logger.error("Redis 连接失败!")
+
+    global checkpointer
+    saver = AsyncRedisSaver.from_conn_string(settings.redis_url)
+    await saver.__aenter__()
+    checkpointer = saver
+    logger.info("Redis Checkpointer started")
 
     try:
         from app.services.summary_milvus_service import check_milvus_connection
@@ -38,7 +47,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
     yield
 
+    # 关闭阶段
     logger.info("Shutting down...")
+    try:
+        await saver.__aexit__(None, None, None)
+        logger.info("Redis Checkpointer closed")
+    except Exception as e:
+        logger.warning(f"Checkpointer 关闭异常: {e}")
     try:
         engine.dispose()
     except Exception:
@@ -50,7 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 app = FastAPI(
     title="Trade Agent Brain",
     description="跨境电商智能体系统",
-    version="2.0.0",
+    version=settings.app_version,
     lifespan=lifespan,
 )
 

@@ -68,16 +68,16 @@ class MemoryMiddleware(AgentMiddleware):
 
         updates = {}
 
-        # 历史恢复（仅首次请求）
-        if self.enable_history_recovery and len(messages) <= 1:
-            recovered = self._recover_history(session_id)
-            if recovered:
-                current_msg = messages[-1] if messages else None
-                final_messages = recovered.copy()
-                if current_msg and isinstance(current_msg, HumanMessage):
-                    final_messages.append(current_msg)
-                updates["messages"] = [RemoveMessage(id=REMOVE_ALL_MESSAGES)] + final_messages
-                logger.info(f"恢复 {len(recovered)} 条历史消息, session={session_id[:8]}...")
+        # 历史恢复（仅首次请求） 不需要mysql首次请求恢复，Redis Checkpointer 已经自动恢复了完整 state
+        # if self.enable_history_recovery and len(messages) <= 1:
+        #     recovered = self._recover_history(session_id)
+        #     if recovered:
+        #         current_msg = messages[-1] if messages else None
+        #         final_messages = recovered.copy()
+        #         if current_msg and isinstance(current_msg, HumanMessage):
+        #             final_messages.append(current_msg)
+        #         updates["messages"] = [RemoveMessage(id=REMOVE_ALL_MESSAGES)] + final_messages
+        #         logger.info(f"恢复 {len(recovered)} 条历史消息, session={session_id[:8]}...")
 
         # 相关上下文检索
         if self.enable_context_retrieval and session_id:

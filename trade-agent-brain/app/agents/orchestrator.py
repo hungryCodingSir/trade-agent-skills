@@ -12,13 +12,12 @@ import asyncio
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from deepagents import create_deep_agent
 from deepagents.middleware.filesystem import FileData
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from loguru import logger
 from pydantic import BaseModel
@@ -136,13 +135,14 @@ class CrossBorderAgent:
     支持 Planning + FileSystem + SubAgent + Middleware。
     """
 
-    def __init__(self, user_context: UserContext, session_id: str = None):
+    def __init__(self, user_context: UserContext, session_id: str = None, checkpointer=None):
+        """初始化 Deep Agent，包含 LLM + Tools + SubAgents + Middleware + Skills"""
         self.user_context = user_context
         self.session_id = session_id or str(uuid.uuid4())
         self.runtime_context = AgentRuntimeContext.from_user_context(
             user_context, self.session_id
         )
-        self.checkpointer = InMemorySaver()
+        self.checkpointer = checkpointer
         self._skill_files = _load_skill_files(settings.skills_dir)
         self._agent = self._create_deep_agent()
 
@@ -213,7 +213,7 @@ class CrossBorderAgent:
         }
 
         try:
-            result = await self._agent.ainvoke(input=input_data, config=config)
+            result = await self._agent.ainvoke(input=cast(Any, input_data), config=config)
 
             messages = result.get("messages", [])
             last_message = messages[-1] if messages else None
@@ -295,6 +295,7 @@ async def create_cross_border_agent(
     session_id: str = None,
 ) -> CrossBorderAgent:
     """工厂方法: 基于 (user_id, session_id) 复用或创建 Agent 实例。"""
+    from app.main import checkpointer
     session_id = session_id or str(uuid.uuid4())
     cache_key = (user_context.user_id, session_id)
 
@@ -310,6 +311,7 @@ async def create_cross_border_agent(
         agent = CrossBorderAgent(
             user_context=user_context,
             session_id=session_id,
+            checkpointer=checkpointer,
         )
         _agent_cache[cache_key] = agent
 

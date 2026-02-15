@@ -21,10 +21,7 @@ async def chat_with_agent(
             session_id=request.session_id,
         )
 
-        result = await agent.chat(
-            message=request.message,
-            thread_id=request.session_id,
-        )
+        result = await agent.chat(message=request.message, thread_id=request.session_id)
 
         response = AgentResponse(
             message=result.get("message", ""),

@@ -1,4 +1,4 @@
-"""消息持久化中间件 — 将用户消息和 AI 响应保存到 MySQL"""
+"""消息持久化中间件 — 将用户消息和 AI 响应保存到 MySQL 给前端展示历史对话列表、做数据分析、合规审计。 真正的历史checkpoint持久化，由redis管理"""
 from typing import Any, Optional, Dict
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
