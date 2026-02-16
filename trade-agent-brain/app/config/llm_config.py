@@ -1,5 +1,6 @@
 """LLM 模型配置: 主模型 / 轻量模型 / Embedding"""
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from app.callbacks.prompt_logger_callback import prompt_logger
 from app.config.settings import settings
 
 main_model = ChatOpenAI(
@@ -8,6 +9,12 @@ main_model = ChatOpenAI(
     max_tokens=settings.llm_max_tokens,
     api_key=settings.dashscope_api_key,
     base_url=settings.dashscope_api_url,
+    streaming=True,
+    # 让千问一次返回多个 tool_calls
+    model_kwargs={
+        "parallel_tool_calls": True,
+    },
+    callbacks=[prompt_logger],
 )
 
 mini_model = ChatOpenAI(

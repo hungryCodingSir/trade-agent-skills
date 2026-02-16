@@ -14,7 +14,7 @@ async def chat_with_agent(
     request: AgentRequest,
     current_user: UserContext = Depends(get_current_user),
 ):
-    """与 Agent 对话"""
+    """与 Agent 对话（非流式）"""
     try:
         agent = await create_cross_border_agent(
             user_context=current_user,
@@ -42,6 +42,38 @@ async def chat_with_agent(
             detail=f"智能体响应失败: {str(e)}",
         )
 
+
+@router.post("/chat_streaming")
+async def chat_with_agent_streaming(
+    request: AgentRequest,
+    current_user: UserContext = Depends(get_current_user),
+):
+    """与 Agent 对话（SSE 流式输出）"""
+    import json
+    from starlette.responses import StreamingResponse
+
+    async def event_generator():
+        try:
+            agent = await create_cross_border_agent(
+                user_context=current_user,
+                session_id=request.session_id,
+            )
+
+            async for data in agent.chat_stream(
+                message=request.message,
+                thread_id=request.session_id,
+            ):
+                # SSE 格式: "data: ...\n\n"
+                yield f"data: {data}\n\n"
+
+        except Exception as e:
+            logger.error(f"Streaming error: {e}")
+            yield f"data: {json.dumps({'event': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache","Connection": "keep-alive","X-Accel-Buffering": "no"},
+    )
 
 @router.post("/resume", response_model=ApiResponse)
 async def resume_interrupted_agent(
