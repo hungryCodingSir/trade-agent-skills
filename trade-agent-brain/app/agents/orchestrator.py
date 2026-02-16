@@ -1,33 +1,31 @@
 """
 跨境电商 Deep Agent 编排器
-
-基于 LangChain Deep Agents + AgentSkills 构建，支持:
-- AgentSkills 渐进式加载（7 个领域技能按需注入）
-- SubAgent 委派（复杂任务自动委派给专业子智能体）
-- Planning Tool（内置任务规划器）
-- FileSystem Backend（虚拟文件系统管理长上下文）
-- 混合记忆（Redis + MySQL + Milvus）
+- AgentSkills 渐进式加载（Progressive Disclosure）使用 FilesystemBackend 从磁盘加载 Skill，
+框架仅读取 frontmatter → 按 description 匹配 → 按需读取完整内容
+- SubAgent 委派（复杂任务自动委派给专业子智能体）、Planning Tool（内置任务规划器）、FileSystem Backend（磁盘文件系统，取代 StateBackend）
+Token 用量说明:FilesystemBackend + skills=[path] → 仅 frontmatter + 按需读取 → 每次请求 ~500 tokens
 """
 import asyncio
+import json
 import uuid
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, AsyncGenerator, Dict, List, Optional, cast
 
 from deepagents import create_deep_agent
-from deepagents.middleware.filesystem import FileData
+from deepagents.backends import FilesystemBackend
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from loguru import logger
 from pydantic import BaseModel
-
+from app.utils.token_usage import log_qwen_token_usage
 from app.agents.subagents import get_subagent_configs
 from app.config.llm_config import main_model, mini_model
-from app.config.settings import settings
+from app.config.settings import settings, BASE_DIR
 from app.middleware.memory_middleware import MemoryMiddleware
 from app.middleware.persistence_middleware import PersistenceMiddleware
 from app.middleware.quality_guard_middleware import ResponseQualityGuardMiddleware
+from app.middleware.qwen_caching_middleware import QwenPromptCachingMiddleware
 from app.models.schemas import UserContext, UserType
 from app.tools import get_all_tools
 from app.utils.snowflake import generate_id
@@ -57,42 +55,6 @@ class AgentRuntimeContext(BaseModel):
         )
 
 
-def _load_skill_files(skills_dir: str) -> Dict[str, FileData]:
-    """从磁盘读取所有 SKILL.md，映射为 StateBackend 需要的虚拟文件路径。"""
-    skill_files: Dict[str, FileData] = {}
-    skills_path = Path(skills_dir)
-
-    # 如果是相对路径，基于项目根目录解析
-    if not skills_path.is_absolute():
-        from app.config.settings import BASE_DIR
-        skills_path = BASE_DIR / skills_dir
-
-    if not skills_path.exists():
-        logger.warning(f"Skills 目录不存在: {skills_path}")
-        return skill_files
-
-    for skill_dir in skills_path.iterdir():
-        if not skill_dir.is_dir():
-            continue
-        for file_path in skill_dir.rglob("*"):
-            if file_path.is_file():
-                try:
-                    content = file_path.read_text(encoding="utf-8")
-                    virtual_path = f"/skills/{skill_dir.name}/{file_path.name}"
-                    now = datetime.now().isoformat()
-                    skill_files[virtual_path] = FileData(
-                        content=content.split("\n"),
-                        created_at=now,
-                        modified_at=now,
-                    )
-                    logger.debug(f"Loaded skill: {virtual_path}")
-                except Exception as e:
-                    logger.error(f"Failed to load {file_path}: {e}")
-
-    logger.info(f"Loaded {len(skill_files)} skill files from {skills_dir}")
-    return skill_files
-
-
 def _build_system_prompt(user_ctx: UserContext) -> str:
     """构建角色感知的系统提示词（核心身份 + 通用规则，业务知识由 Skills 按需提供）。"""
     role_map = {
@@ -115,40 +77,33 @@ def _build_system_prompt(user_ctx: UserContext) -> str:
 
 工作方式:
 1. 收到用户问题后，先从 /skills/ 目录读取对应领域的 SKILL.md 获取业务知识
-2. **简单任务自己处理**：单次工具调用即可完成的任务（如查一个订单、查一次物流），
-   你直接按照 Skill 中的指引调用工具并回复
-3. **复杂任务委派 SubAgent**：仅当任务满足以下任一条件时，才委派给专业子智能体：
-   - 需要多次工具调用且结果间有依赖关系（如对比多个订单）
-   - 需要聚合分析（如统计退货率、生成报告）
-   - 涉及多领域协作（如查订单+查物流+发通知）
-   - 需要长篇格式化输出（如完整的分析报告）
-4. **绝不重复**：SubAgent 不需要再读 Skill，它有自己的专业 system_prompt
+2. **绝大多数任务自己处理**：
+   - 查一个或多个订单 → 自己并行调用 query_order_status
+   - 查物流 → 自己调用 query_shipping_info
+   - 查购物车 → 自己调用 query_shopping_cart
+   - 简单对比（如对比几个订单的状态/金额）→ 自己查完后对比
+3. **仅以下情况委派 SubAgent**：
+   - 需要生成完整的数据分析报告（含图表、统计指标）
+   - 需要跨 3 个以上领域协作（如查订单+查物流+查海关+发邮件）
+   - 用户明确要求详细的、多页面的报告
+4. **并行优先**：当需要查多个订单/物流时，一次返回多个工具调用，不要串行
 
-委派判断示例：
-- "查一下 ORD001 的状态" → 简单，自己处理
-- "对比我最近5个订单的物流时效" → 复杂，委派 logistics-specialist
-- "帮我给供应商写封催货邮件" → 复杂，委派 communication-specialist
-- "我的购物车里有什么" → 简单，自己处理
-- "分析本月退货率并生成报告" → 复杂，委派 analytics-specialist"""
+关键原则：
+- 能自己做的绝不委派，委派的开销是自己做的 2-3 倍
+- 对比分析不等于复杂任务，查完数据你自己就能对比
+- 宁可自己多调几个工具，也不要轻易启动 SubAgent"""
 
 
 class CrossBorderAgent:
-    """
-    跨境电商 Deep Agent
-
-    封装 create_deep_agent() 创建的智能体，提供 chat / resume 接口。
-    支持 Planning + FileSystem + SubAgent + Middleware。
-    """
-
+    """跨境电商 Deep Agent Skills 按需加载"""
     def __init__(self, user_context: UserContext, session_id: str = None, checkpointer=None):
-        """初始化 Deep Agent，包含 LLM + Tools + SubAgents + Middleware + Skills"""
+        """初始化 Deep Agent，包含 LLM + Tools + SubAgents + Middleware"""
         self.user_context = user_context
         self.session_id = session_id or str(uuid.uuid4())
         self.runtime_context = AgentRuntimeContext.from_user_context(
             user_context, self.session_id
         )
         self.checkpointer = checkpointer
-        self._skill_files = _load_skill_files(settings.skills_dir)
         self._agent = self._create_deep_agent()
 
     def _create_deep_agent(self):
@@ -169,9 +124,16 @@ class CrossBorderAgent:
             ),
             ResponseQualityGuardMiddleware(max_retries=2, min_score=0.6),
             PersistenceMiddleware(),
+            # skills metadata + system prompt 被千问显式缓存。
+            QwenPromptCachingMiddleware(
+                cache_system_prompt=True,  # 缓存 system prompt（含 skill metadata）
+                cache_last_user_message=True,  # 缓存到最后一条用户消息（多轮历史也被缓存）
+            ),
         ]
 
         system_prompt = _build_system_prompt(self.user_context)
+
+        backend = FilesystemBackend(root_dir=str(BASE_DIR))
 
         agent = create_deep_agent(
             model=main_model,
@@ -179,7 +141,8 @@ class CrossBorderAgent:
             subagents=subagents,
             middleware=middlewares,
             system_prompt=system_prompt,
-            skills=["./skills/"],
+            skills=[settings.skills_dir],  # 框架的渐进式披露
+            backend=backend,
             checkpointer=self.checkpointer,
         )
 
@@ -190,20 +153,16 @@ class CrossBorderAgent:
         thread_id = thread_id or self.session_id
 
         # 任务复杂度预判，辅助 LLM 路由
-        complexity = self._estimate_complexity(message)
-        hint = (
-            f"\n[系统提示: 任务复杂度预判={complexity}，"
-            f"{'建议委派给专业 SubAgent' if complexity == 'complex' else '建议直接处理'}]"
-        )
+        # complexity = self._estimate_complexity(message)
+        # hint = (
+        #     f"\n[系统提示: 任务复杂度预判={complexity}，"
+        #     f"{'建议委派给专业 SubAgent' if complexity == 'complex' else '建议直接处理'}]"
+        # )
 
+        # FilesystemBackend 从磁盘读取，无需手动注入文件到 state
         input_data = {
-            "messages": [
-                HumanMessage(
-                    content=message + hint,
-                    id=f"human-{generate_id()}"
-                )
-            ],
-            "files": self._skill_files,
+            # "messages": [HumanMessage(content=message + hint, id=f"human-{generate_id()}")],
+            "messages": [HumanMessage(content=message, id=f"human-{generate_id()}")],
         }
 
         config: RunnableConfig = {
@@ -222,7 +181,8 @@ class CrossBorderAgent:
 
             messages = result.get("messages", [])
             last_message = messages[-1] if messages else None
-
+            # 统计 token 使用情况
+            log_qwen_token_usage(result)
             response = {
                 "message": last_message.content if last_message else "",
                 "session_id": self.session_id,
@@ -238,6 +198,94 @@ class CrossBorderAgent:
         except Exception as e:
             logger.error(f"Agent chat error: {e}", exc_info=True)
             raise
+
+    async def chat_stream(self, message: str, thread_id: str = None) -> AsyncGenerator[str, None]:
+        """
+        流式对话 — 使用 LangGraph 的 astream_events (v2) 逐 token 输出。
+
+        Yields SSE 格式的 JSON 字符串，事件类型：
+          - token      : LLM 生成的文本片段
+          - tool_start : 工具调用开始
+          - tool_end   : 工具调用结束（含结果摘要）
+          - done       : 流结束，包含完整 session_id
+          - error      : 出错
+        """
+        thread_id = thread_id or self.session_id
+
+        input_data = {
+            "messages": [HumanMessage(content=message, id=f"human-{generate_id()}")],
+        }
+
+        config: RunnableConfig = {
+            "configurable": {
+                "thread_id": thread_id,
+                "user_id": self.user_context.user_id,
+                "username": self.user_context.username,
+                "user_type": self.user_context.user_type.value,
+                "company_name": self.user_context.company_name,
+                "language": self.user_context.language,
+            },
+        }
+
+        full_content = ""  # 累积完整回复
+
+        try:
+            async for event in self._agent.astream_events(
+                input=cast(Any, input_data),
+                config=config,
+                version="v2",
+            ):
+                kind = event.get("event", "")
+
+                # ── 1. LLM 逐 token 流 ──
+                if kind == "on_chat_model_stream":
+                    chunk = event.get("data", {}).get("chunk")
+                    if chunk and hasattr(chunk, "content") and chunk.content:
+                        token_text = chunk.content
+                        full_content += token_text
+                        yield json.dumps({
+                            "event": "token",
+                            "content": token_text,
+                        }, ensure_ascii=False)
+
+                # ── 2. 工具调用开始 ──
+                elif kind == "on_tool_start":
+                    tool_name = event.get("name", "unknown_tool")
+                    tool_input = event.get("data", {}).get("input", {})
+                    yield json.dumps({
+                        "event": "tool_start",
+                        "tool": tool_name,
+                        "input": tool_input if isinstance(tool_input, dict) else str(tool_input),
+                    }, ensure_ascii=False)
+
+                # ── 3. 工具调用结束 ──
+                elif kind == "on_tool_end":
+                    tool_name = event.get("name", "unknown_tool")
+                    tool_output = event.get("data", {}).get("output", "")
+                    # 截断过长的工具输出，避免 SSE 消息过大
+                    output_str = str(tool_output)
+                    if len(output_str) > 500:
+                        output_str = output_str[:500] + "...(truncated)"
+                    yield json.dumps({
+                        "event": "tool_end",
+                        "tool": tool_name,
+                        "output": output_str,
+                    }, ensure_ascii=False)
+
+            # ── 4. 流结束 ──
+            yield json.dumps({
+                "event": "done",
+                "content": full_content,
+                "session_id": self.session_id,
+                "thread_id": thread_id,
+            }, ensure_ascii=False)
+
+        except Exception as e:
+            logger.error(f"Agent stream error: {e}", exc_info=True)
+            yield json.dumps({
+                "event": "error",
+                "content": f"流式响应异常: {str(e)}",
+            }, ensure_ascii=False)
 
     async def resume(
         self,
