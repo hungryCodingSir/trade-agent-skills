@@ -1,6 +1,6 @@
 """Trade Agent Brain — FastAPI 入口"""
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +11,6 @@ from app.config.database import check_mysql_connection, engine
 from app.config.redis_config import check_redis_connection, RedisManager
 from app.config.settings import settings
 
-checkpointer: Optional[AsyncRedisSaver] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator:
@@ -24,10 +23,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     if not await check_redis_connection():
         logger.error("Redis 连接失败!")
 
-    global checkpointer, _saver_cm
+    global _saver_cm
     _saver_cm = AsyncRedisSaver.from_conn_string(settings.redis_url)
     checkpointer = await _saver_cm.__aenter__()
     logger.info("Redis Checkpointer started")
+
+    # ── 编译 Agent 图（进程生命周期内仅此一次） ──
+    from app.agents.orchestrator import init_agent
+    init_agent(checkpointer)
 
     try:
         from app.services.chat_milvus_service import check_milvus_connection
