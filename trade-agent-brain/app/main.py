@@ -30,17 +30,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     logger.info("Redis Checkpointer started")
 
     try:
-        from app.services.summary_milvus_service import check_milvus_connection
+        from app.services.chat_milvus_service import check_milvus_connection
         if not await check_milvus_connection():
             logger.warning("Milvus 连接失败（可选服务）")
     except Exception as e:
         logger.warning(f"Milvus 初始化失败: {e}")
-
-    try:
-        from app.tools import call_mcp_tool
-        logger.info(f"MCP Server: {settings.mcp_server_url}")
-    except Exception as e:
-        logger.warning(f"MCP 初始化失败: {e}")
 
     logger.info("Ready — Swagger: http://localhost:8000/docs")
 

@@ -11,11 +11,11 @@ from pymilvus import (
 from app.config.llm_config import embedding_model
 from app.config.settings import settings
 
-COLLECTION_NAME = "chat_summaries"
+COLLECTION_NAME = "chat_messages"
 DENSE_DIM = 1024
 
 
-class SummaryMilvusService:
+class ChatMilvusService:
 
     def __init__(self):
         self.client = MilvusClient(uri=f"http://{settings.milvus_host}:{settings.milvus_port}")
@@ -28,9 +28,10 @@ class SummaryMilvusService:
 
         schema = self.client.create_schema()
         schema.add_field("id", DataType.INT64, is_primary=True, auto_id=True)
-        schema.add_field("summary_id", DataType.VARCHAR, max_length=64, nullable=True)
+        schema.add_field("msg_id", DataType.VARCHAR, max_length=64, nullable=True)
         schema.add_field("user_id", DataType.INT64, nullable=True)
         schema.add_field("session_id", DataType.VARCHAR, max_length=64, nullable=True)
+        schema.add_field("role", DataType.VARCHAR, max_length=20, nullable=True)
         schema.add_field("context_text", DataType.VARCHAR, max_length=6000,
                          enable_analyzer=True,
                          analyzer_params={"tokenizer": "jieba", "filter": ["cnalphanumonly"]})
@@ -53,13 +54,13 @@ class SummaryMilvusService:
         self.client.create_collection(self.collection_name, schema=schema, index_params=index_params)
         logger.info(f"Collection '{self.collection_name}' created")
 
-    async def save_summary_vector(self, context_text: str, user_id: int = None,
-                                   session_id: str = None, summary_id: str = None):
+    async def save_message_vector(self, context_text: str, user_id: int = None,
+                                  session_id: str = None, msg_id: str = None, role: str = None):
         if not context_text or not context_text.strip():
             return
         dense = embedding_model.embed_query(context_text)
         data = {
-            "summary_id": summary_id, "user_id": user_id, "session_id": session_id,
+            "msg_id": msg_id, "user_id": user_id, "session_id": session_id, "role": role,
             "context_text": context_text, "created_at": int(time.time()),
             "context_dense": dense,
         }
@@ -85,7 +86,7 @@ class SummaryMilvusService:
             "collection_name": self.collection_name,
             "reqs": [sparse_req, dense_req],
             "ranker": RRFRanker(), "limit": top_k,
-            "output_fields": ["summary_id", "user_id", "session_id", "context_text", "created_at"],
+            "output_fields": ["msg_id", "user_id", "session_id", "role", "context_text", "created_at"],
         }
         if filter_expr:
             kwargs["filter"] = filter_expr
@@ -100,7 +101,8 @@ class SummaryMilvusService:
                     "session_id": hit.get("entity", {}).get("session_id"),
                     "created_at": hit.get("entity", {}).get("created_at", 0),
                     "context_text": hit.get("entity", {}).get("context_text", ""),
-                    "summary_id": hit.get("entity", {}).get("summary_id"),
+                    "msg_id": hit.get("entity", {}).get("msg_id"),
+                    "role": hit.get("entity", {}).get("role"),
                 })
         return formatted
 
@@ -108,19 +110,19 @@ class SummaryMilvusService:
         return self.client.get_collection_stats(self.collection_name)
 
 
-_instance: Optional[SummaryMilvusService] = None
+_instance: Optional[ChatMilvusService] = None
 
 
-def get_summary_milvus_service() -> SummaryMilvusService:
+def get_chat_milvus_service() -> ChatMilvusService:
     global _instance
     if _instance is None:
-        _instance = SummaryMilvusService()
+        _instance = ChatMilvusService()
     return _instance
 
 
 async def check_milvus_connection() -> bool:
     try:
-        svc = get_summary_milvus_service()
+        svc = get_chat_milvus_service()
         svc.client.has_collection(svc.collection_name)
         logger.info("Milvus connection OK")
         return True
