@@ -9,7 +9,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime
-from typing import Any, AsyncGenerator, Dict, List, Optional, cast
+from typing import Any, AsyncGenerator, Dict, List, Optional, cast, OrderedDict
 
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
@@ -265,8 +265,35 @@ class CrossBorderAgent:
             logger.error(f"Agent resume error: {e}", exc_info=True)
             raise
 
+
+class LRUCache:
+    """线程安全的 LRU 缓存，配合 asyncio.Lock 使用"""
+    def __init__(self, maxsize: int = 128):
+        self._cache: OrderedDict = OrderedDict()
+        self._maxsize = maxsize
+
+    def get(self, key) -> Optional[Any]:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            return self._cache[key]
+        return None
+
+    def put(self, key, value) -> None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        else:
+            if len(self._cache) >= self._maxsize:
+                self._cache.popitem(last=False)
+        self._cache[key] = value
+
+    def __contains__(self, key) -> bool:
+        return key in self._cache
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
 # Agent 实例缓存: (user_id, session_id) → CrossBorderAgent
-_agent_cache: Dict[tuple, CrossBorderAgent] = {}
+_agent_cache: LRUCache = LRUCache(maxsize=256)
 _factory_lock = asyncio.Lock()
 
 
@@ -279,21 +306,22 @@ async def create_cross_border_agent(
     session_id = session_id or str(uuid.uuid4())
     cache_key = (user_context.user_id, session_id)
 
-    if cache_key in _agent_cache:
-        agent = _agent_cache[cache_key]
-        if agent.user_context.user_id == user_context.user_id:
-            return agent
+    cached_agent = _agent_cache.get(cache_key)
+    if cached_agent is not None:
+        if cached_agent.user_context.user_id == user_context.user_id:
+            return cached_agent
 
     async with _factory_lock:
-        if cache_key in _agent_cache:
-            return _agent_cache[cache_key]
+        cached_agent = _agent_cache.get(cache_key)
+        if cached_agent is not None:
+            return cached_agent
 
         agent = CrossBorderAgent(
             user_context=user_context,
             session_id=session_id,
             checkpointer=checkpointer,
         )
-        _agent_cache[cache_key] = agent
+        _agent_cache.put(cache_key, agent)
 
         logger.info(
             f"New agent created: user={user_context.user_id}, "
