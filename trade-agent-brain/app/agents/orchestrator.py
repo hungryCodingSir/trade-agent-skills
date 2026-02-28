@@ -18,12 +18,13 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from loguru import logger
 from pydantic import BaseModel
+
+from app.middleware.user_context_enhance import inject_system_prompt
 from app.utils.token_usage import log_qwen_token_usage
 from app.agents.subagents import get_subagent_configs
 from app.config.llm_config import main_model, mini_model
 from app.config.settings import settings, BASE_DIR
 from app.middleware.memory_middleware import MemoryMiddleware
-from app.middleware.persistence_middleware import PersistenceMiddleware
 from app.middleware.quality_guard_middleware import ResponseQualityGuardMiddleware
 from app.middleware.qwen_caching_middleware import QwenPromptCachingMiddleware
 from app.models.schemas import UserContext, UserType
@@ -40,7 +41,7 @@ class AgentRuntimeContext(BaseModel):
     language: str = "zh-CN"
     session_id: str
     request_time: Optional[datetime] = None
-    retrieved_summaries: Optional[List[Dict[str, Any]]] = None
+    retrieved_history: Optional[List[Dict[str, Any]]] = None  # Milvus 检索到的历史对话
 
     @classmethod
     def from_user_context(cls, user_ctx: UserContext, session_id: str):
@@ -53,46 +54,6 @@ class AgentRuntimeContext(BaseModel):
             session_id=session_id,
             request_time=datetime.now(),
         )
-
-
-def _build_system_prompt(user_ctx: UserContext) -> str:
-    """构建角色感知的系统提示词（核心身份 + 通用规则，业务知识由 Skills 按需提供）。"""
-    role_map = {
-        UserType.BUYER: ("买家", "查询订单、追踪物流、管理购物车、售后支持"),
-        UserType.SELLER: ("卖家", "发货管理、客户沟通、清关支持、数据分析"),
-        UserType.ADMIN: ("管理员", "平台监控、纠纷仲裁、用户管理、数据分析"),
-    }
-
-    role_name, role_focus = role_map.get(
-        UserType(user_ctx.user_type), ("用户", "通用服务")
-    )
-
-    return f"""你是跨境电商平台的智能助手。
-
-当前用户: {user_ctx.username}（{role_name}）
-公司: {user_ctx.company_name or "个人用户"}
-语言: {user_ctx.language}
-
-核心职责: 为{role_name}提供 {role_focus}
-
-工作方式:
-1. 收到用户问题后，先从 /skills/ 目录读取对应领域的 SKILL.md 获取业务知识
-2. **绝大多数任务自己处理**：
-   - 查一个或多个订单 → 自己并行调用 query_order_status
-   - 查物流 → 自己调用 query_shipping_info
-   - 查购物车 → 自己调用 query_shopping_cart
-   - 简单对比（如对比几个订单的状态/金额）→ 自己查完后对比
-3. **仅以下情况委派 SubAgent**：
-   - 需要生成完整的数据分析报告（含图表、统计指标）
-   - 需要跨 3 个以上领域协作（如查订单+查物流+查海关+发邮件）
-   - 用户明确要求详细的、多页面的报告
-4. **并行优先**：当需要查多个订单/物流时，一次返回多个工具调用，不要串行
-
-关键原则：
-- 能自己做的绝不委派，委派的开销是自己做的 2-3 倍
-- 对比分析不等于复杂任务，查完数据你自己就能对比
-- 宁可自己多调几个工具，也不要轻易启动 SubAgent"""
-
 
 class CrossBorderAgent:
     """跨境电商 Deep Agent Skills 按需加载"""
@@ -117,21 +78,20 @@ class CrossBorderAgent:
 
         middlewares = [
             MemoryMiddleware(
-                summary_model=mini_model,
-                max_messages_trigger=settings.agent_messages_to_trigger,
-                max_tokens_trigger=settings.agent_max_tokens_before_summary,
-                messages_to_keep=settings.agent_messages_to_keep,
+                max_retrieved_messages=5,  # 新参数
+                min_retrieval_score=0.3,
+            ),
+            # 动态提示词注入
+            inject_system_prompt,
+            # skills前页 + 系统提示词被千问显式缓存。
+            QwenPromptCachingMiddleware(
+                # 缓存 system prompt（含 skill metadata）
+                cache_system_prompt=True,
+                # 缓存到最后一条用户消息（多轮历史也被缓存）
+                cache_last_user_message=True,
             ),
             ResponseQualityGuardMiddleware(max_retries=2, min_score=0.6),
-            PersistenceMiddleware(),
-            # skills metadata + system prompt 被千问显式缓存。
-            QwenPromptCachingMiddleware(
-                cache_system_prompt=True,  # 缓存 system prompt（含 skill metadata）
-                cache_last_user_message=True,  # 缓存到最后一条用户消息（多轮历史也被缓存）
-            ),
         ]
-
-        system_prompt = _build_system_prompt(self.user_context)
 
         backend = FilesystemBackend(root_dir=str(BASE_DIR))
 
@@ -140,10 +100,10 @@ class CrossBorderAgent:
             tools=tools,
             subagents=subagents,
             middleware=middlewares,
-            system_prompt=system_prompt,
-            skills=[settings.skills_dir],  # 框架的渐进式披露
+            skills=[settings.skills_dir],
             backend=backend,
             checkpointer=self.checkpointer,
+            context_schema=AgentRuntimeContext,
         )
 
         return agent
@@ -152,32 +112,18 @@ class CrossBorderAgent:
         """与 Agent 对话，返回包含 message / session_id / 可能的 interrupt 信息。"""
         thread_id = thread_id or self.session_id
 
-        # 任务复杂度预判，辅助 LLM 路由
-        # complexity = self._estimate_complexity(message)
-        # hint = (
-        #     f"\n[系统提示: 任务复杂度预判={complexity}，"
-        #     f"{'建议委派给专业 SubAgent' if complexity == 'complex' else '建议直接处理'}]"
-        # )
-
-        # FilesystemBackend 从磁盘读取，无需手动注入文件到 state
         input_data = {
-            # "messages": [HumanMessage(content=message + hint, id=f"human-{generate_id()}")],
             "messages": [HumanMessage(content=message, id=f"human-{generate_id()}")],
         }
 
         config: RunnableConfig = {
             "configurable": {
-                "thread_id": thread_id,
-                "user_id": self.user_context.user_id,
-                "username": self.user_context.username,
-                "user_type": self.user_context.user_type.value,
-                "company_name": self.user_context.company_name,
-                "language": self.user_context.language,
+                "thread_id": thread_id
             },
         }
 
         try:
-            result = await self._agent.ainvoke(input=cast(Any, input_data), config=config)
+            result = await self._agent.ainvoke(input=cast(Any, input_data), config=config, context=self.runtime_context)
 
             messages = result.get("messages", [])
             last_message = messages[-1] if messages else None
@@ -218,12 +164,7 @@ class CrossBorderAgent:
 
         config: RunnableConfig = {
             "configurable": {
-                "thread_id": thread_id,
-                "user_id": self.user_context.user_id,
-                "username": self.user_context.username,
-                "user_type": self.user_context.user_type.value,
-                "company_name": self.user_context.company_name,
-                "language": self.user_context.language,
+                "thread_id": thread_id
             },
         }
 
@@ -233,6 +174,7 @@ class CrossBorderAgent:
             async for event in self._agent.astream_events(
                 input=cast(Any, input_data),
                 config=config,
+                context=self.runtime_context,
                 version="v2",
             ):
                 kind = event.get("event", "")
@@ -297,12 +239,7 @@ class CrossBorderAgent:
 
         config: RunnableConfig = {
             "configurable": {
-                "thread_id": thread_id,
-                "user_id": self.user_context.user_id,
-                "username": self.user_context.username,
-                "user_type": self.user_context.user_type.value,
-                "company_name": self.user_context.company_name,
-                "language": self.user_context.language,
+                "thread_id": thread_id
             },
         }
 
@@ -310,6 +247,7 @@ class CrossBorderAgent:
             result = await self._agent.ainvoke(
                 input=Command(resume=decision),
                 config=config,
+                context=self.runtime_context,
             )
 
             messages = result.get("messages", [])
@@ -326,17 +264,6 @@ class CrossBorderAgent:
         except Exception as e:
             logger.error(f"Agent resume error: {e}", exc_info=True)
             raise
-
-
-    def _estimate_complexity(self, message: str) -> str:
-        """轻量级复杂度预判，辅助 LLM 路由"""
-        complex_signals = [
-            "对比", "分析", "报告", "统计", "趋势", "批量",
-            "所有订单", "最近几个", "汇总", "compare", "analyze",
-            "report", "多个", "历史记录",
-        ]
-        count = sum(1 for s in complex_signals if s in message)
-        return "complex" if count >= 2 else "simple"
 
 # Agent 实例缓存: (user_id, session_id) → CrossBorderAgent
 _agent_cache: Dict[tuple, CrossBorderAgent] = {}
