@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     milvus_port: int = Field(default=19530)
 
     # MCP
-    mcp_server_url: str = Field(default="http://127.0.0.1:9001/sse")
+    mcp_server_url: str = Field(default="http://127.0.0.1:9001/mcp")
     mcp_call_timeout: int = Field(default=30)
 
 

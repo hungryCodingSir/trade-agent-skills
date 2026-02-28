@@ -31,8 +31,7 @@ spring:
       server:
         name: cbec-mcp-server
         version: 1.0.0
-        type: ASYNC
-        sse-message-endpoint: /mcp/messages
+        protocol: STREAMABLE
 
 mybatis-plus:
   mapper-locations: classpath:mapper/*.xml

@@ -19,16 +19,16 @@ from app.config.settings import settings
 
 async def call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
     """通过 MCP SSE 调用 Java Server 上的工具"""
-    from mcp.client.sse import sse_client
+    from mcp.client.streamable_http import streamable_http_client
     from mcp import ClientSession
 
     logger.debug(f"MCP call: tool={tool_name}, args={arguments}")
 
     try:
-        async with sse_client(
-            url=settings.mcp_server_url,
-            timeout=settings.mcp_call_timeout,
-        ) as (read_stream, write_stream):
+        async with streamable_http_client(
+                url=settings.mcp_server_url,
+                timeout=settings.mcp_call_timeout,
+        ) as (read_stream, write_stream, _):  # 注意多一个下划线接收第三个返回值
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 result = await session.call_tool(tool_name, arguments)

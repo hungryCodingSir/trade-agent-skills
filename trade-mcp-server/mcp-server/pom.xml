@@ -18,7 +18,7 @@
         <!-- MCP Server (WebFlux-based SSE) - Spring AI 1.0.0 GA 命名规则 -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-starter-mcp-server-webflux</artifactId>
+            <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
         </dependency>
         <!-- MyBatis-Plus -->
         <dependency>
